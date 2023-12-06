@@ -671,7 +671,7 @@ static pthread_t trace_thread_id;
 static int trace_run;
 static int thread_trace_state;
 
-#define TRACE_DATA_SIZE 5000
+#define TRACE_DATA_SIZE 60000
 static struct trace_data *td[TRACE_DATA_SIZE];
 
 static int trace_data_cur;
@@ -812,7 +812,7 @@ bool check_type(char *type)
 
 bool check_trace_val(type_trace wt, int type, int val)
 {
-    if (type != IS_CV || type != IS_TMP_VAR)
+    if (type == 0 || type == 1)
     {
         return true;
     }
@@ -825,30 +825,68 @@ bool check_trace_val(type_trace wt, int type, int val)
     return false;
 }
 
-// 함수 비교
-bool check_func_name(char *name)
+enum
 {
-    const char *check_list[] = {
-        "mysqli_query", "mysqli_multi_query",
-        "query", "exec",
-        "prepare", "query",
-        "pg_execute", "pg_query", "pg_query_params",
-        "find", "findOne", "findAndModify", "drop", "insert", "update",
-        "file_get_contents", "curl_exec", "file",
-        "move_uploaded_file", "copy",
-        "readfile",
-        "unlink"};
+    NONE = 0,
+    SQLI = 1,
+    SSRF = 2,
+    FILEUPLOAD = 3,
+    FILEDOWNLOAD = 4,
+    FILEDELETION = 5,
+    XSS = 6,
+    CMDI = 7,
+};
+
+typedef struct
+{
+    char *func;
+    int vulntype;
+} check_func;
+
+static check_func cf;
+// 함수 비교
+check_func check_func_name(char *name)
+{
+    check_func tmp;
+    const check_func check_list[] = {
+        {"mysqli_query", SQLI},
+        {"mysqli_multi_query", SQLI},
+        {"query", SQLI},
+        {"exec", SQLI},
+        {"prepare", SQLI},
+        {"query", SQLI},
+        {"pg_execute", SQLI},
+        {"pg_query", SQLI},
+        {"pg_query_params", SQLI},
+        {"find", SQLI},
+        {"findOne", SQLI},
+        {"findAndModify", SQLI},
+        {"drop", SQLI},
+        {"insert", SQLI},
+        {"update", SQLI},
+        {"file_get_contents", SSRF},
+        {"curl_exec", SSRF},
+        {"file", FILEUPLOAD},
+        {"move_uploaded_file", FILEUPLOAD},
+        {"copy", FILEUPLOAD},
+        {"readfile", FILEDOWNLOAD},
+        {"unlink", FILEDELETION}};
 
     // 입력된 이름과 배열 내의 문자열들 비교
-    for (int i = 0; i < sizeof(check_list) / sizeof(check_list[0]); i++)
+    for (int i = 0; i < 22; i++)
     {
-        if (strcmp(name, check_list[i]) == 0)
+        if (strcmp(name, check_list[i].func) == 0)
         {
-            return true;
+            tmp.func = check_list[i].func;
+            tmp.vulntype = check_list[i].vulntype;
+            return tmp;
         }
     }
 
-    return false;
+    tmp.func = "";
+    tmp.vulntype = 0;
+
+    return tmp;
 }
 
 // type : _GET, _POST
@@ -865,22 +903,20 @@ void saveDict(char *type, char *value)
         fprintf(file, "%s\t\t%s\n", type, value);
         fclose(file);
     }
-
 }
 
 // Trace 저장
 #define TRACEFILE "/tmp/tracelog.txt"
-void saveTrace(type_trace _wt, char *_func_name)
+void saveTrace(type_trace _wt, check_func _cf)
 {
     printf("saveTrace\n");
 
     FILE *file = fopen(TRACEFILE, "a+");
     if (file)
     {
-        fprintf(file, "%s\t\t%s\t\t%s\n",_wt.type, _wt.value, _func_name);
+        fprintf(file, "%s\t\t%s\t\t%s\t\t%d\n", _wt.type, _wt.value, _cf.func, _cf.vulntype);
         fclose(file);
     }
-
 }
 
 void trace_run_func(trace_data *_td)
@@ -903,10 +939,12 @@ void trace_run_func(trace_data *_td)
     if (opcode == ZEND_ASSIGN && trace_check == 1)
     {
         // 추적 시작
+
         wt[trace_len].is_trace = 1;
 
         wt[trace_len].loop_len = 0;
         int i = wt[trace_len].loop_len;
+
         wt[trace_len].loop[i].type = _td->op1_type;
         wt[trace_len].loop[i].value = _td->op1_val;
         wt[trace_len].loop_len++;
@@ -917,6 +955,7 @@ void trace_run_func(trace_data *_td)
     else if (trace_check)
     {
         trace_check = 0;
+        return;
     }
 
     switch (opcode)
@@ -975,13 +1014,14 @@ void trace_run_func(trace_data *_td)
 
         // [TODO] 문자열 비교 필요
         // 찾을 경우, enter_func = 2
-
-        if (check_func_name(_td->op2_cst))
+        cf = check_func_name(_td->op2_cst);
+        if (cf.vulntype)
         {
             enter_func = 2;
             // 탐지가 되었음
             func_name = _td->op2_cst;
-            printf("\t 함수 탐지 %s\n", func_name);
+
+            printf("\t 함수 탐지 %s ,type : %d\n", func_name, cf.vulntype);
         }
 
         break;
@@ -1019,7 +1059,6 @@ void trace_run_func(trace_data *_td)
                         wt[i].loop[j].value == _td->op1_val)
                     {
                         trace_check = true;
-                        break;
                     }
                 }
 
@@ -1027,10 +1066,10 @@ void trace_run_func(trace_data *_td)
                 {
                     printf("==========\n");
                     printf("trace done\n");
-                    printf("%s \n", func_name);
+                    printf("%s %d\n", cf.func, cf.vulntype);
                     printf("==========\n");
 
-                    saveTrace(wt[i], func_name);
+                    saveTrace(wt[i], cf);
 
                     wt[i].is_trace = false;
                 }
@@ -1061,9 +1100,12 @@ void trace_run_func(trace_data *_td)
                         // 중복 X
                         if (!check_duplicates)
                         {
-                            wt[i].loop[wt[i].loop_len].type = new_ret.type;
-                            wt[i].loop[wt[i].loop_len].value = new_ret.value;
-                            wt[i].loop_len++;
+                            if (!check_trace_val(wt[i], new_ret.type, new_ret.value))
+                            {
+                                wt[i].loop[wt[i].loop_len].type = new_ret.type;
+                                wt[i].loop[wt[i].loop_len].value = new_ret.value;
+                                wt[i].loop_len++;
+                            }
                         }
                     }
                 }
@@ -1092,9 +1134,12 @@ void trace_run_func(trace_data *_td)
                     }
                     if (loop_check)
                     {
-                        wt[i].loop[wt[i].loop_len].type = _td->ret_type;
-                        wt[i].loop[wt[i].loop_len].value = _td->ret_val;
-                        wt[i].loop_len++;
+                        if (!check_trace_val(wt[i], _td->ret_type, _td->ret_val))
+                        {
+                            wt[i].loop[wt[i].loop_len].type = _td->ret_type;
+                            wt[i].loop[wt[i].loop_len].value = _td->ret_val;
+                            wt[i].loop_len++;
+                        }
                     }
                 }
             }
@@ -1122,9 +1167,12 @@ void trace_run_func(trace_data *_td)
                     }
                     if (loop_check)
                     {
-                        wt[i].loop[wt[i].loop_len].type = _td->ret_type;
-                        wt[i].loop[wt[i].loop_len].value = _td->ret_val;
-                        wt[i].loop_len++;
+                        if (!check_trace_val(wt[i], _td->ret_type, _td->ret_val))
+                        {
+                            wt[i].loop[wt[i].loop_len].type = _td->ret_type;
+                            wt[i].loop[wt[i].loop_len].value = _td->ret_val;
+                            wt[i].loop_len++;
+                        }
                     }
                 }
             }
@@ -1157,16 +1205,22 @@ void trace_run_func(trace_data *_td)
 
                     if (loop_check && (is_add_return == i) && ((e % 2) == 0))
                     {
-                        wt[i].loop[wt[i].loop_len].type = save_vars[e + 1].type;
-                        wt[i].loop[wt[i].loop_len].value = save_vars[e + 1].value;
+                        if (!check_trace_val(wt[i], save_vars[e + 1].type, save_vars[e + 1].value))
+                        {
+                            wt[i].loop[wt[i].loop_len].type = save_vars[e + 1].type;
+                            wt[i].loop[wt[i].loop_len].value = save_vars[e + 1].value;
 
-                        wt[i].loop_len++;
+                            wt[i].loop_len++;
+                        }
                         is_add_return++;
                     }
 
-                    wt[i].loop[wt[i].loop_len].type = _td->ret_type;
-                    wt[i].loop[wt[i].loop_len].value = _td->ret_val;
-                    wt[i].loop_len++;
+                    if (!check_trace_val(wt[i], _td->ret_type, _td->ret_val))
+                    {
+                        wt[i].loop[wt[i].loop_len].type = _td->ret_type;
+                        wt[i].loop[wt[i].loop_len].value = _td->ret_val;
+                        wt[i].loop_len++;
+                    }
                 }
             }
             break;
@@ -1180,7 +1234,8 @@ void trace_run_func(trace_data *_td)
         if (return_count-- == 0)
         {
             printf("초기화 진행\n");
-            for(int i=0; i<trace_len; i++){
+            for (int i = 0; i < trace_len; i++)
+            {
                 free(td[i]);
             }
             trace_len = 0;
@@ -1189,28 +1244,145 @@ void trace_run_func(trace_data *_td)
 
     // 모든 함수에 대하여 추적
     default:
+        // for (int i = 0; i < trace_len; i++)
+        // {
+        //     for (int j = 0; j < wt[i].loop_len; j++)
+        //     {
+        //         if (!check_trace_val(wt[i], _td->op1_type, _td->op1_val))
+        //         {
+        //             wt[i].loop[j].type = _td->op1_type;
+        //             wt[i].loop[j].value = _td->op1_val;
+        //             wt[i].loop_len++;
+        //         }
+        //         if (!check_trace_val(wt[i], _td->op2_type, _td->op2_val))
+        //         {
+        //             wt[i].loop[j].type = _td->op2_type;
+        //             wt[i].loop[j].value = _td->op2_val;
+        //             wt[i].loop_len++;
+        //         }
+        //         if (!check_trace_val(wt[i], _td->ret_type, _td->ret_val))
+        //         {
+        //             wt[i].loop[j].type = _td->ret_type;
+        //             wt[i].loop[j].value = _td->ret_val;
+        //             wt[i].loop_len++;
+        //         }
+        //     }
+        // }
         for (int i = 0; i < trace_len; i++)
         {
+            int arg_check = 0;
             for (int j = 0; j < wt[i].loop_len; j++)
             {
-                if (!check_trace_val(wt[i], _td->op1_type, _td->op1_val))
+                // 이제부터 모든 opcode의 파라미터들을 감시해야함
+                // op1
+
+                if ((_td->op1_type != 0x0))
                 {
-                    wt[i].loop[j].type = _td->op1_type;
-                    wt[i].loop[j].value = _td->op1_val;
+                    if ((wt[i].loop[j].value == _td->op1_val) &&
+                        wt[i].loop[j].type == _td->op1_type)
+                    {
+                        arg_check += (1 << 0);
+                    }
+                }
+
+                // op2
+                if ((_td->op2_type != 0x0))
+                {
+                    if ((wt[i].loop[j].value == _td->op2_val) &&
+                        wt[i].loop[j].type == _td->op2_type)
+                    {
+                        arg_check += (1 << 1);
+                    }
+                }
+
+                // ret
+                if ((_td->ret_type != 0x0))
+                {
+                    if ((wt[i].loop[j].value == _td->ret_val) &&
+                        wt[i].loop[j].type == _td->ret_type)
+                    {
+                        arg_check += (1 << 2);
+                    }
+                }
+            }
+
+            switch (arg_check)
+            {
+            case 0:
+                break;
+            case 1: // op2, ret
+
+                if ((_td->op2_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->op2_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->op2_val;
                     wt[i].loop_len++;
                 }
-                if (!check_trace_val(wt[i], _td->op2_type, _td->op2_val))
+                if ((_td->ret_type != 0x0))
                 {
-                    wt[i].loop[j].type = _td->op2_type;
-                    wt[i].loop[j].value = _td->op2_val;
+                    wt[i].loop[wt[i].loop_len].type = _td->ret_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->ret_val;
                     wt[i].loop_len++;
                 }
-                if (!check_trace_val(wt[i], _td->ret_type, _td->ret_val))
+
+                break;
+            case 2: // op1, ret
+                if ((_td->op1_type != 0x0))
                 {
-                    wt[i].loop[j].type = _td->ret_type;
-                    wt[i].loop[j].value = _td->ret_val;
+                    wt[i].loop[wt[i].loop_len].type = _td->op1_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->op1_val;
                     wt[i].loop_len++;
                 }
+                if ((_td->ret_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->ret_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->ret_val;
+                    wt[i].loop_len++;
+                }
+
+                break;
+            case 4: // op1, op2
+                if ((_td->op2_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->op2_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->op2_val;
+                    wt[i].loop_len++;
+                }
+                if ((_td->op1_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->op1_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->op1_val;
+                    wt[i].loop_len++;
+                }
+                break;
+
+            case 3: // ret
+                if ((_td->ret_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->ret_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->ret_val;
+                    wt[i].loop_len++;
+                }
+                break;
+            case 5: // op2
+                if ((_td->op2_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->op2_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->op2_val;
+                    wt[i].loop_len++;
+                }
+                break;
+            case 6: // op1
+                if ((_td->op1_type != 0x0))
+                {
+                    wt[i].loop[wt[i].loop_len].type = _td->op1_type;
+                    wt[i].loop[wt[i].loop_len].value = _td->op1_val;
+                    wt[i].loop_len++;
+                }
+                break;
+
+            case 7:
+                break;
             }
         }
         break;
@@ -1230,6 +1402,18 @@ void trace_run_func(trace_data *_td)
                 printf("\t [%d]%d\n", wt[i].loop[j].type, wt[i].loop[j].value);
             }
             printf("\t==============");
+        }
+    }
+
+    // TODO 수정해야함
+    for (int i = 0; i < trace_len; i++)
+    {
+        for (int j = wt[i].loop_len - 1; j >= 0; j--)
+        {
+            if (wt[i].loop[j].type == 0 || wt[i].loop[j].type == 1)
+            {
+                wt[i].loop_len--;
+            }
         }
     }
 }
@@ -1299,10 +1483,10 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
     if (trace_run == 0)
         return;
 
- const char *opname = zend_get_opcode_name(opline->opcode);
+    const char *opname = zend_get_opcode_name(opline->opcode);
     if (global_print)
     {
-       
+
         printf("%s[%d](%d[%d], %d[%d]) => %d[%d]\n",
                opname, opline->opcode,
                opline->op1, opline->op1_type,
@@ -1348,7 +1532,7 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
     td[trace_data_size] = tmp_td;
     trace_data_size++;
 
-    //printf("trace_data : %d\n", trace_data_size);
+    // printf("trace_data : %d\n", trace_data_size);
 
     if (trace_data_size == TRACE_DATA_SIZE)
     {
