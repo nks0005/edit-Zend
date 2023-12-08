@@ -671,7 +671,7 @@ static pthread_t trace_thread_id;
 static int trace_run;
 static int thread_trace_state;
 
-#define TRACE_DATA_SIZE 60000
+#define TRACE_DATA_SIZE 1024 * 24
 static struct trace_data *td[TRACE_DATA_SIZE];
 
 static int trace_data_cur;
@@ -895,7 +895,7 @@ check_func check_func_name(char *name)
 #define DICTFILE "/tmp/dict.txt"
 void saveDict(char *type, char *value)
 {
-    printf("saveDict\n");
+    // printf("saveDict\n");
 
     FILE *file = fopen(DICTFILE, "a+");
     if (file)
@@ -909,7 +909,7 @@ void saveDict(char *type, char *value)
 #define TRACEFILE "/tmp/tracelog.txt"
 void saveTrace(type_trace _wt, check_func _cf)
 {
-    printf("saveTrace\n");
+    // printf("saveTrace\n");
 
     FILE *file = fopen(TRACEFILE, "a+");
     if (file)
@@ -979,7 +979,7 @@ void trace_run_func(trace_data *_td)
             // type이 _GET, _POST인지 여부 확인
             if (check_type(type))
             {
-                printf("\t\t_%s[%s]\n", type, value);
+                // printf("\t\t_%s[%s]\n", type, value);
 
                 // dict.txt 저장
                 saveDict(type, value);
@@ -1010,7 +1010,7 @@ void trace_run_func(trace_data *_td)
 
         enter_func = 1;
 
-        printf("\t 함수 호출 : %s\n", _td->op2_cst);
+        // printf("\t 함수 호출 : %s\n", _td->op2_cst);
 
         // [TODO] 문자열 비교 필요
         // 찾을 경우, enter_func = 2
@@ -1021,7 +1021,7 @@ void trace_run_func(trace_data *_td)
             // 탐지가 되었음
             func_name = _td->op2_cst;
 
-            printf("\t 함수 탐지 %s ,type : %d\n", func_name, cf.vulntype);
+            // printf("\t 함수 탐지 %s ,type : %d\n", func_name, cf.vulntype);
         }
 
         break;
@@ -1064,10 +1064,10 @@ void trace_run_func(trace_data *_td)
 
                 if (trace_check)
                 {
-                    printf("==========\n");
-                    printf("trace done\n");
-                    printf("%s %d\n", cf.func, cf.vulntype);
-                    printf("==========\n");
+                    // printf("==========\n");
+                    // printf("trace done\n");
+                    // printf("%s %d\n", cf.func, cf.vulntype);
+                    // printf("==========\n");
 
                     saveTrace(wt[i], cf);
 
@@ -1434,6 +1434,8 @@ void *thread_trace_func(void *arg)
         trace_run_func(tmp_td);
 
         trace_data_cur++;
+
+        // sleep(10);
     }
     printf("thread stop\n");
 
@@ -1478,48 +1480,36 @@ char *getConstant(zend_op *opline, int opline_arg_type, int opline_arg_val)
     return NULL;
 }
 
+static int optimization_flag;
+
 void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
 {
     if (trace_run == 0)
         return;
 
-    const char *opname = zend_get_opcode_name(opline->opcode);
+    char *opname;
     if (global_print)
     {
-
+        opname = zend_get_opcode_name(opline->opcode);
         printf("%s[%d](%d[%d], %d[%d]) => %d[%d]\n",
                opname, opline->opcode,
                opline->op1, opline->op1_type,
                opline->op2, opline->op2_type,
                opline->result, opline->result_type);
-    }
 
-    FILE *file = fopen("/tmp/opcodeLog", "a+");
-    if (file)
-    {
-        fprintf(file, "%s[%d](%d[%d], %d[%d]) => %d[%d]\n",
-                opname, opline->opcode,
-                opline->op1, opline->op1_type,
-                opline->op2, opline->op2_type,
-                opline->result, opline->result_type);
+        FILE *file = fopen("/tmp/opcodeLog", "a+");
+        if (file)
+        {
+
+            fprintf(file, "%s[%d](%d[%d], %d[%d]) => %d[%d]\n",
+                    opname, opline->opcode,
+                    opline->op1, opline->op1_type,
+                    opline->op2, opline->op2_type,
+                    opline->result, opline->result_type);
+        }
     }
 
     // 값 저장
-    trace_data *tmp_td = (trace_data *)malloc(sizeof(trace_data));
-
-    tmp_td->opcode = opline->opcode;
-
-    tmp_td->op1_type = opline->op1_type;
-    tmp_td->op2_type = opline->op2_type;
-    tmp_td->ret_type = opline->result_type;
-
-    tmp_td->op1_val = opline->op1.var;
-    tmp_td->op2_val = opline->op2.var;
-    tmp_td->ret_val = opline->result.var;
-
-    tmp_td->op1_cst = getConstant(opline, tmp_td->op1_type, tmp_td->op1_val);
-    tmp_td->op2_cst = getConstant(opline, tmp_td->op2_type, tmp_td->op2_val);
-    tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
 
     // 중간 테스트
     // printf("=============================================\n");
@@ -1529,10 +1519,92 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
     // printf("ret : %d %d %s\n", tmp_td->ret_type, tmp_td->ret_val, tmp_td->ret_cst ? tmp_td->ret_cst : "");
     // printf("=============================================\n");
 
-    td[trace_data_size] = tmp_td;
-    trace_data_size++;
+    // TODO 모든걸 저장하면 버퍼가 터짐
+    // 트레이싱 상태 플래그일때만 저장하기로?
 
+    // _GET, 얻는 패턴 일떄?
     // printf("trace_data : %d\n", trace_data_size);
+
+    // TODO _GET, _POST 형식만.. 저장되게
+    /*
+                ZEND_FETCH_R[80](896[1], -1[0]) => 160[2]
+                ZEND_FETCH_DIM_R[81](160[2], 880[1]) => 176[2]
+`   */
+    trace_data *tmp_td;
+    if (optimization_flag == 0 && opline->opcode == ZEND_FETCH_DIM_R && execute_data->opline->opcode == ZEND_FETCH_R)
+    {
+        zend_op *pre_opline = execute_data->opline;
+        // _GET, _POST 비교
+        char *test = getConstant(pre_opline, pre_opline->op1_type, pre_opline->op1.var);
+
+        printf("test : %s\n", test);
+        if (check_type(test))
+        {
+            printf("entered\n");
+            // pre opcode
+            tmp_td = (trace_data *)malloc(sizeof(trace_data));
+
+            tmp_td->opcode = pre_opline->opcode;
+
+            tmp_td->op1_type = pre_opline->op1_type;
+            tmp_td->op2_type = pre_opline->op2_type;
+            tmp_td->ret_type = pre_opline->result_type;
+
+            tmp_td->op1_val = pre_opline->op1.var;
+            tmp_td->op2_val = pre_opline->op2.var;
+            tmp_td->ret_val = pre_opline->result.var;
+
+            tmp_td->op1_cst = getConstant(pre_opline, tmp_td->op1_type, tmp_td->op1_val);
+            tmp_td->op2_cst = getConstant(pre_opline, tmp_td->op2_type, tmp_td->op2_val);
+            tmp_td->ret_cst = getConstant(pre_opline, tmp_td->ret_type, tmp_td->ret_val);
+            td[trace_data_size] = tmp_td;
+            trace_data_size++;
+            // --------------------------
+
+            // cur opcode
+            trace_data *tmp_td = (trace_data *)malloc(sizeof(trace_data));
+
+            tmp_td->opcode = opline->opcode;
+
+            tmp_td->op1_type = opline->op1_type;
+            tmp_td->op2_type = opline->op2_type;
+            tmp_td->ret_type = opline->result_type;
+
+            tmp_td->op1_val = opline->op1.var;
+            tmp_td->op2_val = opline->op2.var;
+            tmp_td->ret_val = opline->result.var;
+
+            tmp_td->op1_cst = getConstant(opline, tmp_td->op1_type, tmp_td->op1_val);
+            tmp_td->op2_cst = getConstant(opline, tmp_td->op2_type, tmp_td->op2_val);
+            tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
+            td[trace_data_size] = tmp_td;
+            trace_data_size++;
+
+            // set optimization flag
+            optimization_flag = 1;
+        }
+    }
+
+    if (optimization_flag)
+    {
+        tmp_td = (trace_data *)malloc(sizeof(trace_data));
+
+        tmp_td->opcode = opline->opcode;
+
+        tmp_td->op1_type = opline->op1_type;
+        tmp_td->op2_type = opline->op2_type;
+        tmp_td->ret_type = opline->result_type;
+
+        tmp_td->op1_val = opline->op1.var;
+        tmp_td->op2_val = opline->op2.var;
+        tmp_td->ret_val = opline->result.var;
+
+        tmp_td->op1_cst = getConstant(opline, tmp_td->op1_type, tmp_td->op1_val);
+        tmp_td->op2_cst = getConstant(opline, tmp_td->op2_type, tmp_td->op2_val);
+        tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
+        td[trace_data_size] = tmp_td;
+        trace_data_size++;
+    }
 
     if (trace_data_size == TRACE_DATA_SIZE)
     {
