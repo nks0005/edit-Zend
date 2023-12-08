@@ -671,7 +671,7 @@ static pthread_t trace_thread_id;
 static int trace_run;
 static int thread_trace_state;
 
-#define TRACE_DATA_SIZE 1024 * 24
+#define TRACE_DATA_SIZE 1024 * 1024 * 2
 static struct trace_data *td[TRACE_DATA_SIZE];
 
 static int trace_data_cur;
@@ -1460,6 +1460,18 @@ void vld_start_trace()
 
         if (getenv("PR"))
             global_print = 1;
+
+        // 코드 커버리지 계측
+        if (afl_area_ptr == NULL)
+        {
+            if (getenv(SHM_ENV_VAR))
+            {
+                int shm_id = atoi(getenv(SHM_ENV_VAR));
+                afl_area_ptr = shmat(shm_id, NULL, 0);
+            }
+        }
+
+        // =================
     }
 }
 
@@ -1486,6 +1498,22 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
 {
     if (trace_run == 0)
         return;
+
+
+
+    // 코드 커버리지 계측
+    op = (opline->lineno << 8) | opline->opcode; // opcode; //| (lineno << 8);
+
+    int bitmapLoc = (op ^ last) % MAPSIZE;
+    // printf("bitmapLoc : %x \n", bitmapLoc);
+
+    // fprintf(ofile, "==============================\n");
+
+    if (afl_area_ptr != NULL)
+        afl_area_ptr[bitmapLoc]++;
+
+    last = op;
+    // ====================
 
     char *opname;
     if (global_print)
@@ -1605,6 +1633,10 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
         td[trace_data_size] = tmp_td;
         trace_data_size++;
     }
+
+
+    
+
 
     if (trace_data_size == TRACE_DATA_SIZE)
     {
