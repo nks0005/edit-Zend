@@ -825,22 +825,32 @@ bool check_trace_val(type_trace wt, int type, int val)
     return false;
 }
 
-enum
-{
-    NONE = 0,
-    SQLI = 1,
-    SSRF = 2,
-    FILEUPLOAD = 3,
-    FILEDOWNLOAD = 4,
-    FILEDELETION = 5,
-    XSS = 6,
-    CMDI = 7
-};
+// enum
+// {
+//     NONE = "",
+//     SQLI = "SQLI",
+//     SSRF = "SSRF",
+//     FILEUPLOAD = "FileUpload",
+//     FILEDOWNLOAD = "FileDownload",
+//     FILEDELETION = "FileDeletion",
+//     XSS = "XSS",
+//     CMDI = "CMDI"
+// };
+
+#define NONE ""
+#define SQLI "SQLI"
+#define SSRF "SSRF"
+#define FILEUPLOAD "FileUpload"
+#define FILEDOWNLOAD "FileDownload"
+#define FILEDELETION "FileDeletion"
+#define XSS "XSS"
+#define CMDI "CMDI"
+
 
 typedef struct
 {
     char *func;
-    int vulntype;
+    char *vulntype;
 } check_func;
 
 static check_func cf;
@@ -886,7 +896,7 @@ check_func check_func_name(char *name)
     }
 
     tmp.func = "";
-    tmp.vulntype = 0;
+    tmp.vulntype = "";
 
     return tmp;
 }
@@ -916,7 +926,7 @@ void saveTrace(type_trace _wt, check_func _cf)
     FILE *file = fopen(TRACEFILE, "a+");
     if (file)
     {
-        fprintf(file, "%s\t\t%s\t\t%s\t\t%d\n", _wt.type, _wt.value, _cf.func, _cf.vulntype);
+        fprintf(file, "%s\t\t%s\t\t%s\t\t%s\n", _wt.type, _wt.value, _cf.func, _cf.vulntype);
         fclose(file);
     }
 }
@@ -1020,7 +1030,7 @@ void trace_run_func(trace_data *_td)
         // [TODO] 문자열 비교 필요
         // 찾을 경우, enter_func = 2
         cf = check_func_name(_td->op2_cst);
-        if (cf.vulntype)
+        if (cf.vulntype != "")
         {
             enter_func = 2;
             // 탐지가 되었음
@@ -1606,13 +1616,34 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
                     }
                 }
 
-                issue_check=1;
+                issue_check = 1;
             }
         }
-        // =================
 
-        return;
+        if (issue_check == 0)
+        {
+            return;
+        }
+        // =================
     }
+
+    // if (trace_run == 1)
+    // {
+    //     // OFF를 원한다면..
+    //     FILE *file;
+
+    //     // 파일 경로 설정
+    //     char *filename = "/tmp/tracestart";
+
+    //     // 파일 열기 시도
+    //     file = fopen(filename, "r");
+
+    //     // 파일을 지우면 더이상 트레이싱을 진행하지 않음
+    //     if (file == NULL)
+    //     {
+    //     }
+    // }
+
     // 코드 커버리지 계측
     op = (opline->lineno << 8) | opline->opcode; // opcode; //| (lineno << 8);
 
