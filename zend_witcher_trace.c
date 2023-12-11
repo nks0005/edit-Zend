@@ -834,7 +834,7 @@ enum
     FILEDOWNLOAD = 4,
     FILEDELETION = 5,
     XSS = 6,
-    CMDI = 7,
+    CMDI = 7
 };
 
 typedef struct
@@ -870,10 +870,12 @@ check_func check_func_name(char *name)
         {"move_uploaded_file", FILEUPLOAD},
         {"copy", FILEUPLOAD},
         {"readfile", FILEDOWNLOAD},
-        {"unlink", FILEDELETION}};
+        {"unlink", FILEDELETION},
+        {"echo", XSS},
+        {"eval", XSS}};
 
     // 입력된 이름과 배열 내의 문자열들 비교
-    for (int i = 0; i < 22; i++)
+    for (int i = 0; i < 24; i++)
     {
         if (strcmp(name, check_list[i].func) == 0)
         {
@@ -934,6 +936,9 @@ void trace_run_func(trace_data *_td)
     // 추적 시작
     int opcode = _td->opcode;
     trace_data *pre_td;
+
+    //
+    char *xsstmp;
 
     // 값 할당 추적 용 코드
     if (opcode == ZEND_ASSIGN && trace_check == 1)
@@ -1024,6 +1029,67 @@ void trace_run_func(trace_data *_td)
             // printf("\t 함수 탐지 %s ,type : %d\n", func_name, cf.vulntype);
         }
 
+        break;
+
+    // XSS 탐지
+    case ZEND_ECHO:
+        xsstmp = "echo";
+        cf = check_func_name(xsstmp);
+
+        for (int i = 0; i < trace_len; i++)
+        {
+            bool trace_check = false;
+            for (int j = 0; j < wt[i].loop_len; j++)
+            {
+                if (wt[i].loop[j].type == _td->op1_type &&
+                    wt[i].loop[j].value == _td->op1_val)
+                {
+                    trace_check = true;
+                }
+            }
+
+            if (trace_check)
+            {
+                // printf("==========\n");
+                // printf("trace done\n");
+                // printf("%s %d\n", cf.func, cf.vulntype);
+                // printf("==========\n");
+
+                saveTrace(wt[i], cf);
+
+                wt[i].is_trace = false;
+            }
+        }
+        break;
+
+    case ZEND_INCLUDE_OR_EVAL:
+        xsstmp = "eval";
+        cf = check_func_name(xsstmp);
+
+        for (int i = 0; i < trace_len; i++)
+        {
+            bool trace_check = false;
+            for (int j = 0; j < wt[i].loop_len; j++)
+            {
+                if (wt[i].loop[j].type == _td->op1_type &&
+                    wt[i].loop[j].value == _td->op1_val)
+                {
+                    trace_check = true;
+                }
+            }
+
+            if (trace_check)
+            {
+                // printf("==========\n");
+                // printf("trace done\n");
+                // printf("%s %d\n", cf.func, cf.vulntype);
+                // printf("==========\n");
+
+                saveTrace(wt[i], cf);
+
+                wt[i].is_trace = false;
+            }
+        }
         break;
 
     // ZEND_SEND_VAR 추적
@@ -1499,8 +1565,6 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
     if (trace_run == 0)
         return;
 
-
-
     // 코드 커버리지 계측
     op = (opline->lineno << 8) | opline->opcode; // opcode; //| (lineno << 8);
 
@@ -1559,16 +1623,38 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
                 ZEND_FETCH_DIM_R[81](160[2], 880[1]) => 176[2]
 `   */
     trace_data *tmp_td;
+
+    if (optimization_flag)
+    {
+        tmp_td = (trace_data *)malloc(sizeof(trace_data));
+
+        tmp_td->opcode = opline->opcode;
+
+        tmp_td->op1_type = opline->op1_type;
+        tmp_td->op2_type = opline->op2_type;
+        tmp_td->ret_type = opline->result_type;
+
+        tmp_td->op1_val = opline->op1.var;
+        tmp_td->op2_val = opline->op2.var;
+        tmp_td->ret_val = opline->result.var;
+
+        tmp_td->op1_cst = getConstant(opline, tmp_td->op1_type, tmp_td->op1_val);
+        tmp_td->op2_cst = getConstant(opline, tmp_td->op2_type, tmp_td->op2_val);
+        tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
+        td[trace_data_size] = tmp_td;
+        trace_data_size++;
+    }
+
     if (optimization_flag == 0 && opline->opcode == ZEND_FETCH_DIM_R && execute_data->opline->opcode == ZEND_FETCH_R)
     {
         zend_op *pre_opline = execute_data->opline;
         // _GET, _POST 비교
         char *test = getConstant(pre_opline, pre_opline->op1_type, pre_opline->op1.var);
 
-        printf("test : %s\n", test);
+        //printf("test : %s\n", test);
         if (check_type(test))
         {
-            printf("entered\n");
+            //printf("entered\n");
             // pre opcode
             tmp_td = (trace_data *)malloc(sizeof(trace_data));
 
@@ -1613,30 +1699,7 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
         }
     }
 
-    if (optimization_flag)
-    {
-        tmp_td = (trace_data *)malloc(sizeof(trace_data));
-
-        tmp_td->opcode = opline->opcode;
-
-        tmp_td->op1_type = opline->op1_type;
-        tmp_td->op2_type = opline->op2_type;
-        tmp_td->ret_type = opline->result_type;
-
-        tmp_td->op1_val = opline->op1.var;
-        tmp_td->op2_val = opline->op2.var;
-        tmp_td->ret_val = opline->result.var;
-
-        tmp_td->op1_cst = getConstant(opline, tmp_td->op1_type, tmp_td->op1_val);
-        tmp_td->op2_cst = getConstant(opline, tmp_td->op2_type, tmp_td->op2_val);
-        tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
-        td[trace_data_size] = tmp_td;
-        trace_data_size++;
-    }
-
-
     
-
 
     if (trace_data_size == TRACE_DATA_SIZE)
     {
