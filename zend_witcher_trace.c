@@ -1508,8 +1508,13 @@ void *thread_trace_func(void *arg)
     return;
 }
 
+static int issue_check = 0;
+
 void vld_start_trace()
 {
+
+    return;
+
     if (getenv("ST"))
     {
         trace_run = RUN;
@@ -1562,9 +1567,52 @@ static int optimization_flag;
 
 void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
 {
-    if (trace_run == 0)
-        return;
 
+    if (trace_run == 0)
+    {
+        if (issue_check == 0)
+        {
+            FILE *file;
+
+            // 파일 경로 설정
+            char *filename = "/tmp/tracestart";
+
+            // 파일 열기 시도
+            file = fopen(filename, "r");
+            if (file != NULL)
+            {
+                trace_run = RUN;
+                thread_trace_state = RUN;
+
+                // 트레이싱 쓰레드 생성
+                if (pthread_create(&trace_thread_id, NULL, thread_trace_func, NULL) != 0)
+                {
+                    printf("can't create Thread\n");
+
+                    trace_run = STOP;
+                    thread_trace_state = STOP;
+                }
+
+                if (getenv("PR"))
+                    global_print = 1;
+
+                // 코드 커버리지 계측
+                if (afl_area_ptr == NULL)
+                {
+                    if (getenv(SHM_ENV_VAR))
+                    {
+                        int shm_id = atoi(getenv(SHM_ENV_VAR));
+                        afl_area_ptr = shmat(shm_id, NULL, 0);
+                    }
+                }
+
+                issue_check=1;
+            }
+        }
+        // =================
+
+        return;
+    }
     // 코드 커버리지 계측
     op = (opline->lineno << 8) | opline->opcode; // opcode; //| (lineno << 8);
 
@@ -1651,11 +1699,11 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
         // _GET, _POST 비교
         char *test = getConstant(pre_opline, pre_opline->op1_type, pre_opline->op1.var);
 
-        //printf("test : %s\n", test);
+        // printf("test : %s\n", test);
         if (check_type(test))
         {
-            //printf("entered\n");
-            // pre opcode
+            // printf("entered\n");
+            //  pre opcode
             tmp_td = (trace_data *)malloc(sizeof(trace_data));
 
             tmp_td->opcode = pre_opline->opcode;
@@ -1698,8 +1746,6 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
             optimization_flag = 1;
         }
     }
-
-    
 
     if (trace_data_size == TRACE_DATA_SIZE)
     {
