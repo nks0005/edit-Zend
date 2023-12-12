@@ -782,14 +782,17 @@ static int check_u_func;
 static char *func_name;
 
 static int global_print;
+
+// get, post 작업중인 wt
+static int work_wt_cur;
 // ================================================
 // trace 코드
 
 bool check_type(char *type)
 {
-    const char *check[] = {"_GET", "_POST"};
+    const char *check[] = {"_GET", "_POST", "_REQUEST"};
 
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
     {
         // printf("%d == %d\n", strlen(type), strlen(check[i]));
         if (strlen(type) != strlen(check[i]))
@@ -845,7 +848,6 @@ bool check_trace_val(type_trace wt, int type, int val)
 #define FILEDELETION "FileDeletion"
 #define XSS "XSS"
 #define CMDI "CMDI"
-
 
 typedef struct
 {
@@ -1037,8 +1039,48 @@ void trace_run_func(trace_data *_td)
             func_name = _td->op2_cst;
 
             // printf("\t 함수 탐지 %s ,type : %d\n", func_name, cf.vulntype);
+            break;
         }
 
+        // get, post 함수로 얻는 경우.. 새로운 트레이싱
+
+        char *get_post_func[] = {"get", "post"};
+        bool get_post_check = false;
+        for (int i = 0; i < 2; i++)
+        {
+            if (strlen(_td->op2_cst) != strlen(get_post_func[i]))
+                continue;
+
+            bool lcheck = true;
+            for (int j = 0; j < strlen(get_post_func[i]); j++)
+            {
+                //printf("%c == %c\n", _td->op2_cst[j], get_post_func[i][j]);
+                if (_td->op2_cst[j] != get_post_func[i][j])
+                    lcheck = false;
+            }
+
+            if (lcheck)
+                get_post_check = true;
+        }
+
+        //printf("비교\n");
+        if (get_post_check)
+        {
+            //printf("get post start trace\n");
+            
+            enter_func = 4;
+
+            work_wt_cur = trace_len;
+            wt[work_wt_cur].type = _td->op2_cst;
+
+            if (_td->ret_type != 0)
+            {
+                wt[work_wt_cur].loop[wt[work_wt_cur].loop_len].type = _td->ret_type;
+                wt[work_wt_cur].loop[wt[work_wt_cur].loop_len].value = _td->ret_val;
+                wt[work_wt_cur].loop_len++;
+            }
+            // value는 VAR에서 채워야함
+        }
         break;
 
     // XSS 탐지
@@ -1104,7 +1146,14 @@ void trace_run_func(trace_data *_td)
 
     // ZEND_SEND_VAR 추적
     case ZEND_SEND_VAR_EX:
+    //printf("ZEND_SEND_VAR_EX, %d\n", enter_func); 
+    goto _ZEND_SEND_VAR;
+    case ZEND_SEND_VAL_EX:
+    case ZEND_SEND_VAL:
     case ZEND_SEND_VAR:
+        _ZEND_SEND_VAR:
+         //printf("ZEND_SNED_VAR, %d\n", enter_func); 
+    
         switch (enter_func)
         {
         case 1:
@@ -1187,6 +1236,24 @@ void trace_run_func(trace_data *_td)
                 }
             }
             break;
+
+        case 4:
+            // 새로운 get, post 함수로 파라미터 추적?
+
+            // 파라미터 추출
+            //printf("%d, %s\n", _td->op1_type, _td->op1_cst);
+            if (_td->op1_type == 1 && _td->op1_cst)
+            {
+                //printf("파라미터 추출 %s\n", _td->op1_cst);
+                wt[work_wt_cur].value = _td->op1_cst;
+
+                wt[work_wt_cur].is_trace = true;
+                trace_len++;
+
+                saveDict(wt[work_wt_cur].type, wt[work_wt_cur].value);
+
+            }
+            break;
         }
         break;
 
@@ -1218,6 +1285,15 @@ void trace_run_func(trace_data *_td)
                         }
                     }
                 }
+            }
+        }
+        if(enter_func == 4){
+            // 리턴값도 넣어주자
+            if (_td->ret_type != 0)
+            {
+                wt[work_wt_cur].loop[wt[work_wt_cur].loop_len].type = _td->ret_type;
+                wt[work_wt_cur].loop[wt[work_wt_cur].loop_len].value = _td->ret_val;
+                wt[work_wt_cur].loop_len++;
             }
         }
 
@@ -1298,6 +1374,16 @@ void trace_run_func(trace_data *_td)
                         wt[i].loop_len++;
                     }
                 }
+            }
+            break;
+
+        case 4:
+            // 리턴값도 넣어주자
+            if (_td->ret_type != 0)
+            {
+                wt[work_wt_cur].loop[wt[work_wt_cur].loop_len].type = _td->ret_type;
+                wt[work_wt_cur].loop[wt[work_wt_cur].loop_len].value = _td->ret_val;
+                wt[work_wt_cur].loop_len++;
             }
             break;
         }
@@ -1722,6 +1808,60 @@ void vld_external_trace(zend_execute_data *execute_data, const zend_op *opline)
         tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
         td[trace_data_size] = tmp_td;
         trace_data_size++;
+    }
+
+    if (optimization_flag == 0 && (opline->opcode == ZEND_INIT_METHOD_CALL ||
+                                   opline->opcode == ZEND_INIT_FCALL_BY_NAME ||
+                                   opline->opcode == ZEND_INIT_FCALL))
+    {
+
+        // get, post이면...
+        char *test = getConstant(opline, opline->op2_type, opline->op2.var);
+        if (test)
+        {
+            char *get_post_func[] = {"get", "post"};
+            bool get_post_check = false;
+            for (int i = 0; i < 2; i++)
+            {
+                if (strlen(test) != strlen(get_post_func[i]))
+                    continue;
+
+                bool lcheck = true;
+                for (int j = 0; j < strlen(get_post_func[i]); j++)
+                {
+                    // printf("%c == %c\n", type[j], check[i][j]);
+                    if (test[j] != get_post_func[i][j])
+                        lcheck = false;
+                }
+
+                if (lcheck)
+                    get_post_check = true;
+            }
+
+            if (get_post_check)
+            {
+                printf("트레이싱 시작 \n"); 
+                tmp_td = (trace_data *)malloc(sizeof(trace_data));
+
+                tmp_td->opcode = opline->opcode;
+
+                tmp_td->op1_type = opline->op1_type;
+                tmp_td->op2_type = opline->op2_type;
+                tmp_td->ret_type = opline->result_type;
+
+                tmp_td->op1_val = opline->op1.var;
+                tmp_td->op2_val = opline->op2.var;
+                tmp_td->ret_val = opline->result.var;
+
+                tmp_td->op1_cst = getConstant(opline, tmp_td->op1_type, tmp_td->op1_val);
+                tmp_td->op2_cst = getConstant(opline, tmp_td->op2_type, tmp_td->op2_val);
+                tmp_td->ret_cst = getConstant(opline, tmp_td->ret_type, tmp_td->ret_val);
+                td[trace_data_size] = tmp_td;
+                trace_data_size++;
+
+                optimization_flag = 1;
+            }
+        }
     }
 
     if (optimization_flag == 0 && opline->opcode == ZEND_FETCH_DIM_R && execute_data->opline->opcode == ZEND_FETCH_R)
